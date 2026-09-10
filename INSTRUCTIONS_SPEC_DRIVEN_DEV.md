@@ -22,13 +22,6 @@
 - Functions under 40 lines — extract if longer
 - Tests for every new module in `tests/` mirroring the `src/` structure
 
-## Learning Notes
-- LEARNING_NOTES: ON
-- When ON: after completing each step, generate two files — one in each subfolder of `docs/learning/`:
-  - `docs/learning/project-notes/<topic>-project-notes.md` — what this component does in this project, design choices, gotchas
-  - `docs/learning/theory-notes/<topic>-theory-notes.md` — general theory, how it works under the hood, interview Q&A, trade-offs vs alternatives
-- Never write learning notes directly into `docs/learning/` — they must go under the matching subfolder.
-- Toggle this per project by changing ON to OFF above.
 
 ## Active Task
 @docs/tasks/phase1-scaffold.md 

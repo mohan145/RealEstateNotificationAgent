@@ -1,0 +1,11 @@
+[
+  {
+    "task_id": "prospect_welcome_day0",
+    "agent_output": null,
+    "validation_errors": [
+      "Google Gemini quota limit reached (HTTP 429). Please check your Google AI quota or try again later.",
+      "Latency 36953.0ms exceeded p95 threshold 2000ms"
+    ],
+    "latency_ms": 36953.0
+  }
+]

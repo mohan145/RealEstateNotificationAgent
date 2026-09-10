@@ -44,28 +44,21 @@ And it produces:
 
 The agent is a **ReAct loop** built on LangGraph:
 
-```
-Input JSON
-    |
-    v
-[ LLM Node ]  <-- retry with error feedback --+
-    |                                          |
-    | tool calls pending                       |
-    v                                          |
-[ Tool Node ]  --> results back to LLM         |
-    |                                          |
-    | finalize_output called                   |
-    v                                          |
-[ Validate Node ] -- errors found? ------------+
-    |
-    | clean (or retry limit hit)
-    v
-  END --> results/sample_results.json
-```
+![NotifyBot LangGraph architecture](docs/graph.png)
 
-The LLM reasons and calls tools in a loop until it commits by calling `finalize_output`. A deterministic validation layer then checks hard constraints. If validation fails the agent gets one retry with the specific errors injected into context.
+The LLM reasons and calls tools in a loop until it commits by calling `finalize_output`. A deterministic validation layer then checks hard constraints. If validation fails, the agent retries up to the `RETRY_COUNT` setting with the specific errors injected into context.
 
-See [`docs/DESIGN.md`](docs/DESIGN.md) for the full architecture, decisions, and tradeoffs. See [`docs/graph.png`](docs/graph.png) for the visual graph.
+See [`docs/DESIGN.md`](docs/DESIGN.md) for the full architecture, decisions, and tradeoffs. The source for the diagram is [`docs/graph.mmd`](docs/graph.mmd), and the PNG can be regenerated with the command below.
+
+### High-level design overview
+
+1. **Input:** `runner.py` loads a prospect or resident record and initializes the shared `AgentState`.
+2. **Reasoning:** `llm_node` sends the record and conversation history to the configured provider. The model chooses tools and batches independent checks where possible.
+3. **Action:** LangGraph routes pending tool calls to `tools`, then returns their results to the LLM until `finalize_output` commits a structured decision.
+4. **Validation:** `validate_node` checks consent, opt-out instructions, PII, Fair Housing violations, personalization, and configured thresholds deterministically.
+5. **Recovery:** Validation errors are sent back to the LLM for the configured number of corrective retries. Provider errors are reported as validation errors, and `runner.py` writes the result to `results/` without modifying the input file.
+
+The main responsibilities are separated across `state.py` (state contract), `tools.py` (agent capabilities), `llm.py` (provider factory), `nodes.py` (reasoning and validation), `graph.py` (workflow wiring), and `runner.py` (execution and result reporting). This keeps model behavior flexible while leaving safety and threshold enforcement in code.
 
 ---
 
@@ -75,7 +68,7 @@ See [`docs/DESIGN.md`](docs/DESIGN.md) for the full architecture, decisions, and
 NotifyBot/
 ├── sample.json              # test cases with expected outputs
 ├── results/
-│   └── sample_results.json  # agent outputs (written by runner, never touches sample.json)
+│   └── sample_results_3.json # agent outputs (written by runner, never touches sample.json)
 ├── src/
 │   ├── state.py             # AgentState TypedDict
 │   ├── tools.py             # 5 LangChain tools
@@ -117,7 +110,7 @@ pip install -r requirements.txt
 
 **3. Configure `.env`**
 
-Copy the example and fill in your API key:
+Edit `.env`, select one provider, and fill in only that provider's API key. The file includes comments explaining each setting and is excluded from source control.
 
 ```
 LLM_PROVIDER=anthropic          # anthropic | openai | google
@@ -132,6 +125,7 @@ GOOGLE_API_KEY=...
 GOOGLE_MODEL=gemini-2.5-flash-lite
 
 PERSONALIZATION_SCORE_MIN=0.0   # global fallback threshold
+RETRY_COUNT=1                    # maximum validation retries
 ```
 
 Only the key for your chosen provider needs to be filled in.
@@ -160,7 +154,7 @@ python -m src.runner sample.json all
 python -m src.runner my_records.json all
 ```
 
-Results are written to `results/<filename>_results.json`. The source file is never modified.
+Results are written to `results/<input_stem>_results_3.json`. Each row contains the task ID, agent output, validation errors, and measured latency. The source file is never modified.
 
 **Example output:**
 
@@ -214,7 +208,7 @@ After `finalize_output` is called, `validate_node` checks all thresholds from th
 | `p95_latency_ms` | Wall-clock time measured in `runner.py` around `app.invoke()` |
 | `reply_classification_f1_min` | Not implemented — requires a reply classifier model |
 
-If validation fails, the agent gets one retry. The errors are injected as a `HumanMessage` so the LLM knows exactly what to fix.
+If validation fails, the agent retries up to `RETRY_COUNT` times. The errors are injected as a `HumanMessage` so the LLM knows exactly what to fix. Google quota and HTTP 429 failures are converted into a readable terminal error instead of triggering another provider call.
 
 ---
 

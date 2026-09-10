@@ -1,7 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(python -m src.runner sample.json prospect_welcome_day0)"
-    ]
-  }
-}

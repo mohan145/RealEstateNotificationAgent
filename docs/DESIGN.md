@@ -23,23 +23,25 @@ Input Record (JSON)
        v
   [ LLM Node ]  <-----------------------------+
        |                                      |
-       | tool calls?                          | retry with error feedback
+       | tool calls pending                   | validation errors
        v                                      |
   [ Tool Node ]  -----> back to LLM           |
        |                                      |
        | finalize_output called               |
        v                                      |
-  [ Validate Node ] -- errors found? ---------+
+  [ Validate Node ] --------------------------+
        |
-       | no errors (or retry limit hit)
+       | clean, retry limit hit, or LLM error
        v
      END
       |
       v
-  results/sample_results.json
+  runner writes results/<input>_results_3.json
 ```
 
 The agent is a **ReAct loop** (Reasoning + Acting) built on LangGraph. The LLM reasons, decides which tools to call, observes the results, and repeats until it calls `finalize_output`. After that, a deterministic validation layer checks hard constraints before exit.
+
+At runtime, `runner.py` loads `.env` before the graph is built. The selected provider is created lazily on the first LLM call. A provider failure is normally raised, while a Google quota or HTTP 429 error is converted into a user-readable `llm_error` and ends the graph without retrying the provider call.
 
 ---
 
@@ -53,7 +55,8 @@ class AgentState(TypedDict):
     input_record: dict                        # the raw input JSON
     output: dict | None                       # final structured output
     validation_errors: list[str]             # constraint violations
-    retry_count: int                          # tracks validate->llm retries
+     retry_count: int                          # tracks validate->llm retries
+     llm_error: str | None                     # terminal provider error, if any
 ```
 
 `messages` uses LangGraph's `add_messages` reducer — each node appends to the list rather than replacing it, so the full conversation history is always available.
@@ -78,17 +81,17 @@ Five tools the LLM can call:
 
 ### `src/llm.py` — Provider Factory
 
-Reads `LLM_PROVIDER` from `.env` and returns a tool-bound model. Supported: `anthropic`, `openai`, `google`. Provider packages are imported lazily so the project works without all three installed.
+Reads `LLM_PROVIDER` from the environment and returns a tool-bound model. Supported: `anthropic`, `openai`, and `google`; each model name is configurable through its corresponding `*_MODEL` variable. Provider packages are imported lazily so the project works without importing all three clients at startup.
 
 ---
 
 ### `src/nodes.py` — Graph Nodes
 
 **`llm_node`**
-Invokes the LLM with the full message history. On the first call it seeds the conversation with the system prompt and the input record. On retry (after validation failure) it appends a `HumanMessage` containing the specific errors so the LLM knows exactly what to fix.
+Invokes the LLM with the full message history. On the first call it seeds the conversation with the system prompt and the input record. On retry (after validation failure) it appends a `HumanMessage` containing the specific errors so the LLM knows exactly what to fix. Google quota errors are normalized into `llm_error` and `validation_errors` so the runner can report them cleanly.
 
 **`should_continue`**
-Conditional edge after `llm_node`. Routes to `tools` if the last message contains tool calls, to `validate` if `finalize_output` has been called.
+Conditional edge after `llm_node`. Routes to `end` when `llm_error` is present, to `tools` if the last message contains tool calls, and to `validate` once `finalize_output` appears in the message history. A response without tool calls also falls through to validation, where the missing finalization is reported.
 
 **`validate_node`**
 Deterministic constraint checker. Runs after `finalize_output`:
@@ -98,10 +101,10 @@ Deterministic constraint checker. Runs after `finalize_output`:
 - Safety violations count vs `safety_violations_max` threshold
 - Personalization score vs `personalization_score_min` threshold
 
-Increments `retry_count` on every run.
+Increments `retry_count` on every run. If no `finalize_output` result is present, it reports that as a validation error rather than producing an output.
 
 **`validate_should_retry`**
-If errors exist and `retry_count <= 1`, routes back to `llm_node` with error feedback injected. Otherwise exits to `END`. Max 1 retry to cap API usage.
+If errors exist and `retry_count <= RETRY_COUNT`, routes back to `llm_node` with error feedback injected. Otherwise exits to `END`. `RETRY_COUNT` defaults to `1` and is loaded from the environment, allowing API usage and latency to be bounded without changing code.
 
 ---
 
@@ -120,10 +123,11 @@ validate -> END       (conditional: clean or retry limit hit)
 
 ### `src/runner.py` — Entrypoint
 
-- Builds the graph and invokes it with `app.invoke()`
+- Loads `.env`, builds the graph, and invokes it with `app.invoke()`
 - Attaches a `StepLogger` callback handler that prints tool calls and results live
 - Measures wall-clock latency and checks it against `p95_latency_ms`
-- Writes results to `results/<input_stem>_results.json` without modifying the source file
+- Adds provider errors to the validation error list and returns `output`, `validation_errors`, and `latency_ms`
+- Writes result rows containing `task_id`, `agent_output`, `validation_errors`, and `latency_ms` to `results/<input_stem>_results_3.json` without modifying the source file
 - Prints a side-by-side diff of `expected` vs `agent_output` for each record
 
 ---
@@ -160,13 +164,13 @@ validate -> END       (conditional: clean or retry limit hit)
 
 ---
 
-### 4. Retry loop with max 1 retry
+### 4. Configurable retry loop
 
-**Decision:** On validation failure, inject error feedback into the conversation and re-run the LLM once.
+**Decision:** On validation failure, inject error feedback into the conversation and re-run the LLM up to `RETRY_COUNT` times.
 
 **Reason:** Gives the agent a chance to fix deterministic errors (PII leak, missing opt-out). Without this, a single bad word choice would fail the entire run with no recovery.
 
-**Tradeoff:** Doubles the API call count on failure. Cap at 1 retry to stay within free-tier quotas and keep latency bounded.
+**Tradeoff:** Each retry increases API usage and latency. The default of 1 keeps the common failure path bounded while allowing local configuration when a different limit is appropriate.
 
 ---
 
@@ -180,23 +184,25 @@ validate -> END       (conditional: clean or retry limit hit)
 
 ---
 
-### 6. Provider factory with lazy imports
+### 6. Provider factory with lazy imports and quota handling
 
 **Decision:** `llm.py` imports `langchain_anthropic`, `langchain_openai`, `langchain_google_genai` lazily inside each builder function.
 
 **Reason:** The project should work if only one provider package is installed. A top-level import would crash on startup if any package is missing.
 
-**Tradeoff:** Slightly less obvious import structure. Worth it for install flexibility.
+**Additional behavior:** `nodes.py` detects Google quota and HTTP 429 failures and reports a stable, actionable error message through `llm_error`.
+
+**Tradeoff:** Slightly less obvious import structure and provider-specific error handling. Worth it for install flexibility and clearer quota failures.
 
 ---
 
 ### 7. Results written to separate file
 
-**Decision:** `runner.py` writes output to `results/<stem>_results.json` instead of modifying the input file.
+**Decision:** `runner.py` writes output to `results/<stem>_results_3.json` instead of modifying the input file.
 
 **Reason:** The input files (`sample.json`) are the ground truth. Overwriting them with agent output conflates the test data with test results.
 
-**Tradeoff:** Two files to manage instead of one. Clear separation of concerns outweighs the minor inconvenience.
+**Tradeoff:** Two files to manage instead of one, plus a versioned result suffix used by the current runner. Clear separation of concerns outweighs the minor inconvenience.
 
 ---
 

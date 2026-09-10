@@ -66,11 +66,13 @@ def run(record: dict) -> dict:
     t0 = time.monotonic()
     final = app.invoke(
         {"messages": [], "input_record": record, "output": None,
-         "validation_errors": [], "retry_count": 0},
+         "validation_errors": [], "retry_count": 0, "llm_error": None},
         config={"callbacks": [StepLogger()]},
     )
     latency_ms = round((time.monotonic() - t0) * 1000, 1)
     errors = list(final.get("validation_errors", []))
+    if final.get("llm_error") and final["llm_error"] not in errors:
+        errors.append(final["llm_error"])
     max_latency = record.get("thresholds", {}).get("p95_latency_ms", float("inf"))
     if latency_ms > max_latency:
         errors.append(f"Latency {latency_ms}ms exceeded p95 threshold {max_latency}ms")
@@ -126,7 +128,7 @@ if __name__ == "__main__":
     filter_id = None if filter_arg == "all" else filter_arg
 
     RESULTS_DIR.mkdir(exist_ok=True)
-    output_path = RESULTS_DIR / (input_path.stem + "_results.json")
+    output_path = RESULTS_DIR / (input_path.stem + "_results_3.json")
 
     rows = run_file(input_path, filter_id=filter_id)
 

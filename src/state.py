@@ -10,3 +10,4 @@ class AgentState(TypedDict):
     output: dict | None
     validation_errors: list[str]
     retry_count: int
+    llm_error: str | None

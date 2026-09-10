@@ -10,7 +10,7 @@ def build_graph() -> StateGraph:
     """
     Graph topology:
         llm -> (tools -> llm)* -> validate -> END         no errors
-                                  validate -> llm -> ...  retry on errors (max 1)
+                                validate -> llm -> ...  retry on errors (configured by RETRY_COUNT)
     """
     graph = StateGraph(AgentState)
 
@@ -19,7 +19,9 @@ def build_graph() -> StateGraph:
     graph.add_node("validate", validate_node)
 
     graph.set_entry_point("llm")
-    graph.add_conditional_edges("llm", should_continue, {"tools": "tools", "validate": "validate"})
+    graph.add_conditional_edges(
+        "llm", should_continue, {"tools": "tools", "validate": "validate", "end": END}
+    )
     graph.add_edge("tools", "llm")
     graph.add_conditional_edges("validate", validate_should_retry, {"llm": "llm", "end": END})
 

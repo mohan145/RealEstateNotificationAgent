@@ -2,7 +2,7 @@ import json
 import os
 import re
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from src.llm import get_llm
 from src.state import AgentState
@@ -40,6 +40,10 @@ Call finalize_output exactly once.
 _llm = None
 
 
+class _GoogleQuotaError(RuntimeError):
+    pass
+
+
 def _get_llm():
     global _llm
     if _llm is None:
@@ -47,25 +51,54 @@ def _get_llm():
     return _llm
 
 
+def _is_google_quota_error(error: Exception) -> bool:
+    if os.environ.get("LLM_PROVIDER", "anthropic").lower() != "google":
+        return False
+    status_code = getattr(error, "status_code", getattr(error, "code", None))
+    details = str(error).lower()
+    return status_code == 429 or "429" in details or "quota" in details or "resource exhausted" in details
+
+
+def _invoke_llm(messages: list) -> object:
+    try:
+        return _get_llm().invoke(messages)
+    except Exception as error:
+        if not _is_google_quota_error(error):
+            raise
+        raise _GoogleQuotaError(
+            "Google Gemini quota limit reached (HTTP 429). "
+            "Please check your Google AI quota or try again later."
+        ) from error
+
+
 def llm_node(state: AgentState) -> dict:
     messages = list(state["messages"])
-    if not messages:
-        record_str = json.dumps(state["input_record"], indent=2)
-        seed = [
-            SystemMessage(content=SYSTEM_PROMPT),
-            HumanMessage(content=f"Process this record:\n\n{record_str}"),
-        ]
-        return {"messages": seed + [_get_llm().invoke(seed)]}
-    # On retry inject validation errors so the LLM knows what to fix
-    errors = state.get("validation_errors", [])
-    if errors:
-        feedback = "Validation failed:\n" + "\n".join(f"- {e}" for e in errors)
-        feedback += "\n\nRewrite the message body to fix these issues and call finalize_output again."
-        messages = messages + [HumanMessage(content=feedback)]
-    return {"messages": [_get_llm().invoke(messages)]}
+    try:
+        if not messages:
+            record_str = json.dumps(state["input_record"], indent=2)
+            seed = [
+                SystemMessage(content=SYSTEM_PROMPT),
+                HumanMessage(content=f"Process this record:\n\n{record_str}"),
+            ]
+            return {"messages": seed + [_invoke_llm(seed)]}
+        # On retry inject validation errors so the LLM knows what to fix
+        errors = state.get("validation_errors", [])
+        if errors:
+            feedback = "Validation failed:\n" + "\n".join(f"- {e}" for e in errors)
+            feedback += "\n\nRewrite the message body to fix these issues and call finalize_output again."
+            messages = messages + [HumanMessage(content=feedback)]
+        return {"messages": [_invoke_llm(messages)]}
+    except _GoogleQuotaError as error:
+        return {
+            "messages": [AIMessage(content=str(error))],
+            "llm_error": str(error),
+            "validation_errors": [str(error)],
+        }
 
 
 def should_continue(state: AgentState) -> str:
+    if state.get("llm_error"):
+        return "end"
     last = state["messages"][-1]
     if hasattr(last, "tool_calls") and last.tool_calls:
         return "tools"
@@ -153,6 +186,7 @@ def validate_node(state: AgentState) -> dict:
 
 
 def validate_should_retry(state: AgentState) -> str:
-    if state.get("validation_errors") and state.get("retry_count", 0) <= 1:
+    retry_count = int(os.environ.get("RETRY_COUNT", "1"))
+    if state.get("validation_errors") and state.get("retry_count", 0) <= retry_count:
         return "llm"
     return "end"
