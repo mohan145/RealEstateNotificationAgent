@@ -1,0 +1,51 @@
+[
+  {
+    "task_id": "prospect_welcome_day0",
+    "agent_output": {
+      "next_message": {
+        "channel": "sms",
+        "send_at": "2026-09-11T09:00:00-05:00",
+        "subject": null,
+        "body": "Hi Taylor\u2014welcome to Oak Ridge Apartments! We'd love to help you find your new home in Richardson, TX. Tours are available this week. Would you like to book a time on Thursday or Friday? Reply 1 for Thu, 2 for Fri. Reply STOP to opt out.",
+        "cta": {
+          "type": "schedule_tour",
+          "options": [
+            "Thu",
+            "Fri"
+          ]
+        }
+      },
+      "next_action": {
+        "type": "start_cadence",
+        "name": "prospect_welcome_short_horizon"
+      }
+    },
+    "validation_errors": [
+      "Latency 28860.0ms exceeded p95 threshold 2000ms"
+    ],
+    "latency_ms": 28860.0
+  },
+  {
+    "task_id": "prospect_long_horizon_day3",
+    "agent_output": {
+      "next_message": {
+        "channel": "email",
+        "send_at": "2026-09-10T10:00:00-05:00",
+        "subject": "Tour Oak Ridge \u2014 See the Pool & Fitness Center You Asked About",
+        "body": "Hi Taylor,\n\nWith your target move date of 2026-02-15 coming up, now is the perfect time to get a real feel for Oak Ridge Apartments. You mentioned interest in the pool and fitness center \u2014 both are ready for you to see in person.\n\nBook a tour this week to explore floor plans and lock in your spot before February.\n\nBook your tour now \u2192 https://oakridge.example/tour\n\nTo opt out of emails, click unsubscribe or reply STOP.",
+        "cta": {
+          "type": "schedule_tour",
+          "link": "https://oakridge.example/tour"
+        }
+      },
+      "next_action": {
+        "type": "follow_up_in_days",
+        "value": 3
+      }
+    },
+    "validation_errors": [
+      "Latency 32219.0ms exceeded p95 threshold 2000ms"
+    ],
+    "latency_ms": 32219.0
+  }
+]
